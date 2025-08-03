@@ -15,7 +15,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     await chrome.tabs.sendMessage(tab.id, { action: "toggleSidebar" });
   } catch (e) {
     // No content script here (e.g., chrome:// or unmatched site)
-    console.warn("Failed to toggleSidebar:", e);
+    // console.warn("Failed to toggleSidebar:", e);
   }
 });
 
@@ -36,7 +36,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     applyBadge(tabId, scoreText, color);
 
-    console.log("✅ Badge set:", { tabId, score: scoreText });
+    // console.log("✅ Badge set:", { tabId, score: scoreText });
     sendResponse?.({ success: true });
     return; // sync response
   }
@@ -52,13 +52,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // --- Ask active tab to provide (or recompute) its badge on tab/window changes
 async function requestBadgeForTab(tabId) {
   if (!tabId) return;
+
   try {
+    // Confirm the tab exists before messaging
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || tab.status === "unloaded") {
+      // console.warn("🟡 Tab is not ready:", tabId);
+      return;
+    }
+
     await chrome.tabs.sendMessage(tabId, { action: "requestSeoBadge" });
   } catch (e) {
-    // No content script in this tab; clear the badge to avoid stale values
-    applyBadge(tabId, "");
+    // console.warn("❌ requestBadgeForTab failed:", e.message);
+    applyBadge(tabId, ""); // Clear badge just in case
   }
 }
+
+
 
 // Debounce per tab to avoid spamming during rapid SPA transitions/HMR
 const debounceTimers = new Map();
@@ -112,11 +122,80 @@ chrome.webNavigation.onCommitted.addListener(
 );
 
 // Optional: clear badge when tab closes
-chrome.tabs.onRemoved.addListener((tabId) => {
-  applyBadge(tabId, "");
-});
+// chrome.tabs.onRemoved.addListener((tabId) => {
+//   applyBadge(tabId, "");
+// });
 
-// Optional: initialize (blank) badge on install/update
-chrome.runtime.onInstalled.addListener(() => {
-  console.log("Background installed/updated.");
-});
+
+
+async function fetchUser({ force = false } = {}) {
+  const { userdata, loggedIn, lastFetched } = await new Promise((resolve) => {
+    chrome.storage.local.get(['userdata', 'loggedIn', 'lastFetched'], resolve);
+  });
+
+  const now = Date.now();
+  const FIVE_MINUTES = 5 * 60 * 1000;
+
+  if (!force && loggedIn && lastFetched && (now - lastFetched < FIVE_MINUTES)) {
+    console.log("⚡ Using cached user data");
+    return;
+  }
+
+  // console.log("🔄 Fetching fresh user data...");
+  try {
+    const response = await fetch('http://localhost:8000/users/me', {
+      method: 'GET',
+      credentials: 'include',
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      chrome.storage.local.set({
+        userdata: data,
+        loggedIn: true,
+        lastFetched: now
+      });
+      console.log("✅ User logged in:", data);
+      notifyTabsUserDataUpdated(data);
+    } else if (response.status === 401) {
+      chrome.storage.local.remove(['userdata', 'lastFetched']);
+      chrome.storage.local.set({ loggedIn: false });
+      notifyTabsUserLoggedOut();
+    }
+  } catch (error) {
+    console.error("Fetch User API Error:", error);
+  }
+}
+
+function notifyTabsUserDataUpdated(data) {
+  chrome.tabs.query({}, (tabs) => {
+    tabs.forEach(tab => {
+      if (tab.id) {
+        chrome.tabs.sendMessage(tab.id, { action: 'userDataUpdated', userdata: data }, (response) => {
+          if (chrome.runtime.lastError) {
+            // Gracefully handle the error
+            // console.warn(`Tab ${tab.id} has no receiver: ${chrome.runtime.lastError.message}`);
+          }
+        });
+      }
+    });
+  }); 
+}
+
+function notifyTabsUserLoggedOut() {
+  chrome.tabs.query({}, (tabs) => {
+    tabs.forEach(tab => {
+      if (tab.id) {
+        chrome.tabs.sendMessage(tab.id, { action: 'userLoggedOut' }, (response) => {
+          if (chrome.runtime.lastError) {
+            // console.warn(`Tab ${tab.id} has no receiver: ${chrome.runtime.lastError.message}`);
+          }
+        });
+      }
+    });
+  });
+}
+
+
+chrome.runtime.onStartup.addListener(() => fetchUser({ force: true }));
+chrome.runtime.onInstalled.addListener(() => fetchUser({ force: true }));

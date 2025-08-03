@@ -5,6 +5,7 @@
 
 let sidebar;
 let lastAnalysisResult = null;
+let pendingVitals = null;
 
 // Restrict postMessage to your extension origin
 const EXT_ORIGIN = new URL(chrome.runtime.getURL("")).origin;
@@ -43,7 +44,7 @@ function ensureAnalysis() {
 
 function computeAndSendBadge(pushToSidebar = true) {
   if (!canAnalyzeHere() || typeof SEOAnalyzer === "undefined") {
-    chrome.runtime.sendMessage({ action: "clearBadge" }).catch(() => {});
+    safeSendMessage({ action: "clearBadge" });
     return;
   }
 
@@ -54,12 +55,12 @@ function computeAndSendBadge(pushToSidebar = true) {
   const score = result.seoScore;
   const color = analyzer.getScoreColor(score);
 
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     action: "setBadge",
     score: String(score),
     color,
-    result
-  }).catch(() => {});
+    result,
+  });
 
   if (pushToSidebar) {
     const el = document.getElementById("rankingsfactor-sidebar");
@@ -71,6 +72,24 @@ function computeAndSendBadge(pushToSidebar = true) {
     }
   }
 }
+
+
+function safeSendMessage(msg) {
+  try {
+    // Prevent sending if the extension was reloaded/unavailable
+    if (!chrome?.runtime?.id) return;
+
+    // Safe sendMessage with silent failure
+    chrome.runtime.sendMessage(msg, () => {
+      if (chrome.runtime.lastError) {
+        console.warn("Message failed (likely invalid context):", chrome.runtime.lastError.message);
+      }
+    });
+  } catch (err) {
+    console.warn("Extension context invalidated:", err);
+  }
+}
+
 
 const recomputeDebounced = debounce(() => computeAndSendBadge(true), 300);
 
@@ -84,8 +103,8 @@ function injectStyles() {
     iframe#rankingsfactor-sidebar { 
       position: fixed !important;
       top: 1% !important;
-      right: -480px !important;
-      width: 470px !important;
+      right: -500px !important;
+      width: 490px !important;
       height: 98% !important;
       max-height: 98% !important;
       z-index: 2147483647 !important;
@@ -127,7 +146,6 @@ function injectSidebar() {
     sidebar.style.display = "block";
     setTimeout(() => sidebar.classList.add("open"), 50);
     addSidebarListeners();
-
     // If we already have a result, push it now
     if (lastAnalysisResult) {
       sidebar.contentWindow.postMessage(
@@ -135,7 +153,12 @@ function injectSidebar() {
         EXT_ORIGIN
       );
     }
+    // ✅ Now safe to send user data
+    sendUserDataToIframe();
+    // Check Core web vitals 
+    trySendingVitalsToSidebar();
   };
+
 }
 
 // --- Add / remove events robustly
@@ -211,12 +234,12 @@ function handleEscape(event) {
 
 window.addEventListener("load", () => {
   if (!canAnalyzeHere()) {
-    chrome.runtime.sendMessage({ action: "clearBadge" }).catch(() => {});
+    chrome.runtime.sendMessage({ action: "clearBadge" }).catch(() => { });
     return;
   }
   if (typeof SEOAnalyzer === "undefined") {
     console.error("❌ SEOAnalyzer class not found.");
-    chrome.runtime.sendMessage({ action: "clearBadge" }).catch(() => {});
+    chrome.runtime.sendMessage({ action: "clearBadge" }).catch(() => { });
     return;
   }
 
@@ -313,4 +336,176 @@ chrome.runtime.onMessage.addListener((request) => {
 window.addEventListener("beforeunload", () => {
   removeSidebarListeners();
   window.removeEventListener("message", messageHandler);
+});
+
+
+
+function collectWebVitals() {
+  let lcpValue = 0;
+  let clsValue = 0;
+  let fcpValue = 0;
+  let fidValue = 0;
+  let ttfb = 0;
+  let domLoad = 0;
+  let pageLoad = 0;
+  let requestDuration = 0;
+
+  // Disconnect old observers if needed
+  let lcpObserver, clsObserver, fcpObserver, fidObserver;
+
+  // LCP
+  lcpObserver = new PerformanceObserver((entryList) => {
+    const entries = entryList.getEntries();
+    const lastEntry = entries[entries.length - 1];
+    if (lastEntry) {
+      lcpValue = lastEntry.renderTime || lastEntry.loadTime || lcpValue;
+    }
+  });
+  lcpObserver.observe({ type: "largest-contentful-paint", buffered: true });
+
+  // CLS
+  clsObserver = new PerformanceObserver((entryList) => {
+    for (const entry of entryList.getEntries()) {
+      if (!entry.hadRecentInput) {
+        clsValue += entry.value;
+      }
+    }
+  });
+  clsObserver.observe({ type: "layout-shift", buffered: true });
+
+  // FCP
+  fcpObserver = new PerformanceObserver((entryList) => {
+    const fcpEntry = entryList.getEntries().find(e => e.name === "first-contentful-paint");
+    if (fcpEntry) {
+      fcpValue = fcpEntry.startTime;
+    }
+  });
+  fcpObserver.observe({ type: "paint", buffered: true });
+
+  // FID
+  fidObserver = new PerformanceObserver((entryList) => {
+    const firstInput = entryList.getEntries()[0];
+    if (firstInput) {
+      fidValue = firstInput.processingStart - firstInput.startTime;
+    }
+  });
+  fidObserver.observe({ type: "first-input", buffered: true });
+
+  // Navigation timings (you can still use this immediately)
+  const [navEntry] = performance.getEntriesByType("navigation");
+  if (navEntry) {
+    ttfb = navEntry.responseStart - navEntry.requestStart;
+    domLoad = navEntry.domContentLoadedEventEnd;
+    pageLoad = navEntry.loadEventEnd;
+    requestDuration = navEntry.responseEnd - navEntry.requestStart;
+  }
+
+  // Slight delay to let observers record data
+  setTimeout(() => {
+    lcpObserver.disconnect();
+    clsObserver.disconnect();
+    fcpObserver.disconnect();
+    fidObserver.disconnect();
+
+    const metrics = {
+      LCP: Math.round(lcpValue),
+      CLS: parseFloat(clsValue.toFixed(3)),
+      FCP: Math.round(fcpValue),
+      FID: Math.round(fidValue),
+      TTFB: Math.round(ttfb),
+      DOMLoad: Math.round(domLoad),
+      PageLoad: Math.round(pageLoad),
+      RequestDuration: Math.round(requestDuration),
+    };
+
+    // console.log("✅ Web Vitals ready:", metrics);
+    pendingVitals = metrics;
+    trySendingVitalsToSidebar();
+  }, 2000); // Allow new route time to stabilize
+}
+
+
+function trySendingVitalsToSidebar() {
+  const interval = setInterval(() => {
+    if (sidebar && sidebar.contentWindow && pendingVitals) {
+      sidebar.contentWindow.postMessage({
+        action: 'webVitals',
+        data: pendingVitals,
+      }, EXT_ORIGIN); // Or EXT_ORIGIN if restricted
+      // console.log("📤 Sent vitals to sidebar:", pendingVitals);
+      pendingVitals = null;
+      clearInterval(interval);
+    }
+  }, 300); // Retry every 300ms
+}
+
+collectWebVitals();
+
+
+function reCollectVitalsOnRouteChange() {
+  let lastHref = location.href;
+
+  const observer = new MutationObserver(() => {
+    const currentHref = location.href;
+    if (currentHref !== lastHref) {
+      lastHref = currentHref;
+      // console.log("[Vitals] Route changed → Recollecting vitals...");
+      setTimeout(() => {
+        collectWebVitals(); // Trigger again after route change
+      }, 1000);
+    }
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
+}
+
+
+reCollectVitalsOnRouteChange();
+
+window.addEventListener('popstate', reCollectVitalsOnRouteChange);
+
+function sendUserDataToIframe() {
+  chrome.storage.local.get(['userdata', 'loggedIn'], (result) => {
+    if (!sidebar || !sidebar.contentWindow) {
+      return;
+    }
+    if (result.loggedIn && result.userdata) {
+      sidebar.contentWindow.postMessage({
+        action: 'userDataUpdated',
+        data: result.userdata
+      }, EXT_ORIGIN);  // ✅ Use specific origin
+    } else {
+      sidebar.contentWindow.postMessage({
+        action: 'userLoggedOut'
+      }, EXT_ORIGIN);
+    }
+  });
+}
+
+// Listen for iframe requesting user data
+window.addEventListener('message', (event) => {
+  if (event.origin !== EXT_ORIGIN) return;  // ✅ Security check
+  if (!event.data || typeof event.data !== 'object') return;
+
+  if (event.data.action === 'requestUserData') {
+    sendUserDataToIframe();
+  }
+});
+
+// Listen for updates from background.js
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!sidebar || !sidebar.contentWindow) {
+    return;
+  }
+
+  if (message.action === 'userDataUpdated') {
+    sidebar.contentWindow.postMessage({ action: 'userDataUpdated', data: message.userdata }, EXT_ORIGIN);
+  }
+
+  if (message.action === 'userLoggedOut') {
+    sidebar.contentWindow.postMessage({ action: 'userLoggedOut' }, EXT_ORIGIN);
+  }
 });

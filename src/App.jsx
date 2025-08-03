@@ -10,10 +10,11 @@ import { Ellipsis, Settings, Cpu, Earth } from 'lucide-react';
 import SeoMainView from "./components/SeoMainView";
 import AIMainView from "./components/AIMainView";
 import WebsiteMainView from "./components/WebsiteMainView";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 
 function App() {
   const [seoData, setSeoData] = useState(null);
-
+  const [userData, setUserdata] = useState(null);
   useEffect(() => {
     // 1. Ask parent (content script) for SEO data
     window.parent.postMessage({ action: "requestSeoResult" }, "*");
@@ -26,7 +27,7 @@ function App() {
         event.data.data
       ) {
         setSeoData(event.data.data);
-        console.log("📦 Received SEO Data from content script:", event.data.data);
+        // console.log("📦 Received SEO Data from content script:", event.data.data);
       }
     };
 
@@ -34,29 +35,70 @@ function App() {
     return () => window.removeEventListener("message", handler);
   }, []);
 
+
+  useEffect(() => {
+    window.parent.postMessage({ action: 'requestUserData' }, '*');
+
+    const handler = (event) => {
+      if (!event.data || typeof event.data !== 'object') return;
+
+      if (event.data.action === 'userDataUpdated') {
+        setUserdata(event.data.data);
+      }
+
+      if (event.data.action === 'userLoggedOut') {
+        setUserdata(null);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
   return (
     <div className="h-full flex flex-col bg-gray-50">
-      <header className="flex items-center justify-between sticky top-0 z-30 h-14 p-4 border-b border-gray-200 bg-[#3456f8] shadow-sm">
-        <div className="flex items-center justify-between px-2">
+      <header className="flex items-center justify-between sticky top-0 z-30 h-14 px-2 py-4 border-b border-gray-200 bg-[#3456f8] shadow-sm">
+        <div className="flex items-center">
           <div className="w-36">
             <img src="logo.svg" />
           </div>
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="outline-none">
-              <Ellipsis className="rotate-90 text-white" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            <DropdownMenuItem asChild>
-              <a target="_blank" href="https://chromewebstore.google.com/detail/rankingsfactor/molbncmbnejfhbcflcdhdgcgdejnjinb/reviews?hl=en">Rate Us</a>
-            </DropdownMenuItem>
-            <DropdownMenuItem asChild>
-              <a target="_blank" href="https://forms.zohopublic.in/hiteshranking1/form/ProductFeedback/formperma/02vNJyN9bTr9WEp-6FEkmN2RYcvV1kdkU1V1ootRDKM?zf_rszfm=1">Feedback</a>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <div className="flex gap-1 items-center justify-center">
+          {userData ?
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Avatar className="h-6 w-6 cursor-pointer">
+                  <AvatarImage className="h-6 w-6" src={userData?.profile_pic} />
+                  <AvatarFallback>{userData?.name}</AvatarFallback>
+                </Avatar>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuItem asChild>
+                  <a className="cursor-pointer" target="_blank" href="https://rankingsfactor.com/users/dashboard">Dashboard</a>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <a className="cursor-pointer" target="_blank" href="https://rankingsfactor.com/users/dashboard">Logout</a>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu> :
+            <div><a className="text-white cursor-pointer" target="_blank" href="https://rankingsfactor.com/auth/login">Login/Signup</a></div>}
+
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="outline-none h-5 -mt-[3px]">
+                <Ellipsis className="rotate-90 text-white" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem asChild>
+                <a target="_blank" href="https://chromewebstore.google.com/detail/rankingsfactor/molbncmbnejfhbcflcdhdgcgdejnjinb/reviews?hl=en">Rate Us</a>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <a target="_blank" href="https://forms.zohopublic.in/hiteshranking1/form/ProductFeedback/formperma/02vNJyN9bTr9WEp-6FEkmN2RYcvV1kdkU1V1ootRDKM?zf_rszfm=1">Feedback</a>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </header>
 
       <Tabs defaultValue="seo" className="w-full">
@@ -96,14 +138,14 @@ function App() {
           value="website"
           className="mt-6 animate-fade-in transition-opacity duration-500"
         >
-          <WebsiteMainView/>
+          <WebsiteMainView />
         </TabsContent>
 
         <TabsContent
           value="ai"
           className="mt-6 animate-fade-in transition-opacity duration-500"
         >
-          <AIMainView/>
+          <AIMainView />
         </TabsContent>
       </Tabs>
     </div>

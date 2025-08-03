@@ -31,9 +31,10 @@ class SEOAnalyzer {
       links: this.getLinkInfo(),
       wordCount: this.getWordCount(),
       seoScore: 0,
+      delta:0,
       recommendations: [],
       passSummary: [],
-      metaSummary:[],
+      metaSummary: [],
       timestamp: new Date().toISOString(),
     };
 
@@ -41,6 +42,8 @@ class SEOAnalyzer {
     analysis.recommendations = this.generateRecommendations(analysis);
     analysis.passSummary = this.calculatePassSummary(analysis);
     analysis.metaSummary = this.getMetadataSummary(analysis);
+    // analysis.delta = this.saveSeoScoreSmart(analysis);
+    
 
     this.analysis = analysis;
     return analysis;
@@ -171,12 +174,84 @@ class SEOAnalyzer {
   }
 
   hasStructuredData() {
-    const count = document.querySelectorAll('script[type="application/ld+json"]').length;
-    const passed = count > 0;
-    const status = passed ? "Excellent" : "Good";
-    const message = passed ? "Structured data (JSON-LD) present." : "No structured data (JSON-LD) found.";
-    return { key: "structuredData", passed, status, color: getStatusColor(status), message, value: count };
+    const structuredData = [];
+
+    // 1. ✅ JSON-LD with @graph support
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    jsonLdScripts.forEach(script => {
+      try {
+        const parsed = JSON.parse(script.textContent.trim());
+
+        if (Array.isArray(parsed)) {
+          // Array of objects
+          parsed.forEach(item => structuredData.push({ type: "json-ld", data: item }));
+        } else if (parsed["@graph"]) {
+          // Flatten each entity inside the graph
+          parsed["@graph"].forEach(item => structuredData.push({ type: "json-ld", data: item }));
+        } else {
+          // Single root object
+          structuredData.push({ type: "json-ld", data: parsed });
+        }
+      } catch (e) {
+        // console.warn("❌ Invalid JSON-LD:", e);
+      }
+    });
+
+    // 2. ✅ Microdata
+    const microdataItems = document.querySelectorAll('[itemscope]');
+    microdataItems.forEach(item => {
+      const itemData = {};
+      const itemtype = item.getAttribute('itemtype');
+      if (itemtype) itemData["@type"] = itemtype;
+
+      const props = item.querySelectorAll('[itemprop]');
+      props.forEach(prop => {
+        const name = prop.getAttribute('itemprop');
+        let value;
+
+        if (prop.hasAttribute('content')) {
+          value = prop.getAttribute('content');
+        } else if (prop.tagName === 'META') {
+          value = prop.getAttribute('content');
+        } else if (prop.tagName === 'IMG') {
+          value = prop.getAttribute('src');
+        } else {
+          value = prop.textContent.trim();
+        }
+
+        itemData[name] = value;
+      });
+
+      structuredData.push({ type: "microdata", data: itemData });
+    });
+
+    // 3. ✅ RDFa
+    const rdfaElements = document.querySelectorAll('[typeof]');
+    rdfaElements.forEach(el => {
+      const rdfaData = { "@type": el.getAttribute("typeof") };
+      const properties = el.querySelectorAll('[property]');
+      properties.forEach(prop => {
+        const name = prop.getAttribute('property');
+        const value = prop.getAttribute('content') || prop.textContent.trim();
+        rdfaData[name] = value;
+      });
+      structuredData.push({ type: "rdfa", data: rdfaData });
+    });
+
+    return {
+      key: "structuredData",
+      count: structuredData.length,
+      passed: structuredData.length > 0,
+      status: structuredData.length > 0 ? "Excellent" : "Good",
+      color: getStatusColor(structuredData.length > 0 ? "Excellent" : "Good"),
+      message: structuredData.length > 0
+        ? `Found ${structuredData.length} structured data block${structuredData.length > 1 ? "s" : ""}.`
+        : "No structured data found.",
+      data: structuredData
+    };
   }
+
+
 
   getHeadingsStructure() {
     const h1 = document.querySelectorAll('h1').length;
@@ -216,39 +291,60 @@ class SEOAnalyzer {
   }
 
   getHeadingHierarchy() {
-    const headingOrder = [];
-    // Select all heading tags in DOM order
-    document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(node => {
-      headingOrder.push({
-        tag: node.tagName,
-        text: (node.textContent || '').trim()
-      });
-    });
-    return headingOrder;
+    const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6')).map(node => ({
+      tag: node.tagName,
+      level: parseInt(node.tagName.substring(1), 10),
+      text: (node.textContent || '').trim()
+    }));
+    return headings;
   }
 
   getHeadingHierarchyCheck() {
     const headingOrder = this.getHeadingHierarchy();
-    let passed = true, status = "Excellent", message = "Heading hierarchy is valid.";
+    let passed = true;
+    let status = "Excellent";
+    let message = "Heading hierarchy is valid.";
+
+    if (headingOrder.length === 0) {
+      return {
+        key: "headingHierarchy",
+        passed: false,
+        status: "Needs work",
+        color: getStatusColor("Needs work"),
+        message: "No headings found on the page.",
+        value: headingOrder
+      };
+    }
+
+    const firstHeading = headingOrder[0];
 
     // 1. Must start with H1
-    if (!headingOrder.length || headingOrder[0].tag !== "H1") {
+    if (firstHeading.level !== 1) {
       passed = false;
       status = "Needs work";
-      message = "Heading structure does not start with H1.";
+      message = "The first heading is not an H1. Always start with a single H1.";
     }
-    // 2. Optional: Check for skipped heading levels (H2 after H4 etc.)
-    let prevLevel = 1;
-    for (const h of headingOrder) {
-      const level = parseInt(h.tag[1], 10);
-      if (level > prevLevel + 1) {
+
+    // 2. Ensure only one H1 exists
+    const h1Count = headingOrder.filter(h => h.level === 1).length;
+    if (h1Count > 1) {
+      passed = false;
+      status = "Good";
+      message = `Multiple H1 tags found (${h1Count}). Use a single H1 for the main title.`;
+    }
+
+    // 3. Check for skipped heading levels (e.g., H2 -> H4)
+    for (let i = 1; i < headingOrder.length; i++) {
+      const prev = headingOrder[i - 1];
+      const curr = headingOrder[i];
+      if (curr.level > prev.level + 1) {
         passed = false;
         status = "Good";
-        message = "Some heading levels are skipped in the hierarchy.";
+        message = `Heading level jumped from H${prev.level} to H${curr.level}. Avoid skipping levels.`;
         break;
       }
-      prevLevel = level;
     }
+
     return {
       key: "headingHierarchy",
       passed,
@@ -260,23 +356,55 @@ class SEOAnalyzer {
   }
 
 
+
+
   getLinkInfo() {
-    const links = document.querySelectorAll('a');
-    let inactive = 0;
+    const links = Array.from(document.querySelectorAll('a'));
+    let inactiveLinks = [];
+    let totalLinks = links.length;
+
+    const isInactive = (href) =>
+      !href || href.trim() === '' || href === '#' || href.startsWith('javascript');
+
     links.forEach(link => {
       const href = link.getAttribute('href');
-      if (!href || href.trim() === '' || href === '#' || href === 'javascript:void(0)') inactive++;
+      if (isInactive(href)) {
+        inactiveLinks.push({
+          text: (link.textContent || '').trim(),
+          href: href,
+        });
+      }
     });
-    let passed, status, message;
-    if (links.length === 0) {
-      passed = false; status = "Needs work"; message = "No links found.";
-    } else if (inactive > 0) {
-      passed = false; status = "Needs work"; message = `${inactive} inactive links.`;
-    } else {
-      passed = true; status = "Excellent"; message = "All links are active.";
+
+    let passed = true;
+    let status = "Excellent";
+    let message = "All links appear to be active and useful.";
+
+    if (totalLinks === 0) {
+      passed = false;
+      status = "Needs work";
+      message = "No links found. Consider adding relevant internal and external links.";
+    } else if (inactiveLinks.length > 0) {
+      passed = false;
+      status = "Needs work";
+      message = `${inactiveLinks.length} inactive or placeholder link(s) detected.`;
     }
-    return { key: "links", passed, status, color: getStatusColor(status), message, value: { total: links.length, inactive } };
+
+    return {
+      key: "links",
+      passed,
+      status,
+      color: getStatusColor(status),
+      message,
+      value: {
+        totalLinks,
+        activeLinks: totalLinks - inactiveLinks.length,
+        inactiveLinksCount: inactiveLinks.length,
+        inactiveLinks,
+      },
+    };
   }
+
 
   getWordCount() {
     const text = document.body.innerText || '';
@@ -486,6 +614,62 @@ class SEOAnalyzer {
       pagewordCount: pagewordCount
     };
   }
+ 
+
+saveSeoScoreSmart(data) {
+  const url = data.url;
+  const normalizeUrl = true;
+  const newScore = data.seoScore;
+  const now = Date.now();
+  const maxAgeMs = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+  if (typeof newScore !== "number" || isNaN(newScore) || newScore < 0 || newScore > 100) {
+    console.warn("Invalid SEO score provided.");
+    return 0;
+  }
+
+  const targetUrl = normalizeUrl ? this.normalizePageUrl(url) : url;
+  const storageKey = `seo-score:${targetUrl}`;
+
+  const prevData = localStorage.getItem(storageKey);
+  let previousScore;
+
+  if (prevData) {
+    try {
+      const { score, timestamp } = JSON.parse(prevData);
+      if (now - timestamp <= maxAgeMs) {
+        previousScore = score;
+      } else {
+        localStorage.removeItem(storageKey); // Expired
+      }
+    } catch {
+      localStorage.removeItem(storageKey); // Corrupted data
+    }
+  }
+
+  if (previousScore === newScore) {
+    return 0;
+  }
+
+  localStorage.setItem(storageKey, JSON.stringify({
+    score: newScore,
+    timestamp: now
+  }));
+
+  return previousScore !== undefined ? newScore - previousScore : 0;
+}
+
+normalizePageUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    u.search = "";
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 }
 
 if (typeof module !== 'undefined' && module.exports) {

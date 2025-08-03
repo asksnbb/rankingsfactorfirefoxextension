@@ -68,14 +68,39 @@ const StructuredData = ({ structuredData }) => {
                 </AccordionTrigger>
                 <AccordionContent>
                     <div className="px-3 pb-3 text-sm text-gray-700">
-                        <strong>Structured data detected:</strong> {structuredData.value > 0 ? `${structuredData.value} block(s) found` : "None"}
+                        <strong>Structured data detected:</strong>{" "}
+                        {structuredData.value > 0
+                            ? `${structuredData.value} block(s) found`
+                            : "None"}
                     </div>
-                    <div className="px-3 pb-3 text-sm text-gray-700">{structuredData.message}</div>
+                    <div className="px-3 pb-3 text-sm text-gray-700">
+                        {structuredData.message}
+                    </div>
                     <div className="px-3">
                         <Separator className="my-4" />
                     </div>
+                    
+                    {/* 🔽 Structured Data Viewer */}
+                    <div className="px-3 pb-4">
+                        {structuredData.data.map((item, index) => (
+                            <div
+                                key={index}
+                                className="mb-4 rounded-md bg-gray-50 p-3 border border-gray-200 overflow-auto"
+                            >
+                                <div className="text-xs text-gray-500 mb-1 font-mono">
+                                    Type:{" "}
+                                    <span className="text-indigo-500">{item.type}</span>
+                                </div>
+                                <pre className="text-xs text-gray-800 whitespace-pre-wrap break-words font-mono">
+                                    {JSON.stringify(item.data, null, 2)}
+                                </pre>
+                            </div>
+                        ))}
+                    </div>
+                    
                     <div className="px-3 pt-1 pb-3 text-sm text-blue-700 italic">
-                        <strong>Search Engine Insights:</strong> {getSearchEngineOpinion(structuredData.status, structuredData)}
+                        <strong>Search Engine Insights:</strong>{" "}
+                        {getSearchEngineOpinion(structuredData.status, structuredData)}
                     </div>
                 </AccordionContent>
             </AccordionItem>
